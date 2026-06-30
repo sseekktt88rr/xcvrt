@@ -8,6 +8,7 @@ import timecode
 
 pars = arg.ArgumentParser(prog="xcvrt")
 pars.add_argument('-m', '--mode', help="mode: y=youtube, l=local, t=parse timecodes")
+pars.add_argument('-x','--extra', action='store_true', help='selected mode + t (for example: l+t or y+t)')
 pars.add_argument('-f', '--format', help='mp3 flac wav')
 pars.add_argument('-o', '--out', help="output file")
 pars.add_argument('-i', '--input', help="input file")
@@ -19,6 +20,7 @@ pars.add_argument('-n', '--number', help='track number')
 pars.add_argument('-c', '--cover', help='track cover')
 pars.add_argument('-y', '--lyrics', help='lyrics file')
 pars.add_argument('--time', help='timecodes file')
+pars.add_argument('--xtag', action='store_true', help='use timecode title for tag title')
 args = pars.parse_args()
 formats=['mp3', 'flac', 'wav']
 now = f"{time.strftime("%Y-%m-%d-%H-%M-%S")}"
@@ -26,7 +28,9 @@ now = f"{time.strftime("%Y-%m-%d-%H-%M-%S")}"
 def outputParse(args):
     if args.format: args.format = args.format.lower()
     if not args.out:
-        if not args.format: args.out=f"{now}.mp3"; args.format = 'mp3'
+        if not args.format: 
+            if not args.input: args.out=f"{now}.mp3"; args.format = 'mp3'
+            else: args.out = args.input
         if args.format: args.out=f"{now}.{args.format}"
     if args.out and not args.format:
         ext = os.path.splitext(args.out)[-1][1:].lower()
@@ -132,8 +136,30 @@ def setTag(args):
     elif args.format == 'wav': print("[setTag] try to use wav\n[setTag] there is nothing to do")
     else: print('[setTag] format error (not mp3,flac,wav). exiting...'); sys.exit(0)
 
-print("[main] xcvrt starting!")
+def timecodes(args):
+    print('[timecode] try to open timecodes file...')
+    t = None
+    try:
+        with open(args.time, 'r') as f:
+            t = timecode.parse_tracks(f.read(), round(librosa.get_duration(path=args.input)))
+    except Exception as e:
+        print(f'[timecode] failed to read file, error: {e}'); sys.exit(0)
+    print("[timecode] try to split file...")
+    for s in t:
+        a = " ".join(['ffmpeg', '-i', f'"{args.input}"', '-ss', s["start"], '-to', s["end"], '-c', 'copy', f'"{s["title"]}.{args.format}"'])
+        #print(a)
+        result = sb.run(a)
+        #result = sb.run(['ffmpeg', '-i', f'"{args.input}"', '-ss', s["start"], '-to', s["end"], '-c', 'copy', f'"{s["title"]}.{args.format}"'], capture_output=True, text=True)
+        if result.returncode == 0: print("[timecode] success")
+        else: print(f"[timecode] failed to split, error: {result.stderr}")
+        if args.xtag:
+            args.title = f'{s["title"]}'
+            args.out = f'{s["title"]}.{args.format}'
+            setTag(args)
+
+print("[main] xcvrt v0.0.1 starting!")
 if not args.mode: print("[main] no mode selected"); sys.exit(0)
+if args.extra and not args.time: print('[main] if you use -x flag, please select timecode path with --time'); sys.exit(0)
 print("[main] init outputParse")
 outputParse(args)
 if args.format not in formats: print("[main] output format in not supported"); sys.exit(0)
@@ -141,35 +167,32 @@ if args.input:
     if os.path.splitext(args.input)[-1][1:].lower() not in formats: print("[main] input format in not supported"); sys.exit(0)
 if args.mode == 'l':
     print("[main] xcvrt mode: local")
+    if args.extra: print('[main] <local> enabled extra option')
     if not args.out: args.out = args.input
     else:
         if os.path.splitext(args.out)[-1][1:].lower() != os.path.splitext(args.input)[-1][1:].lower():
             print('[main] <local> format conflict. not supported in this version of xcvrt, sorry. use same format for in and out.')
             sys.exit(0)
         else:
-            shutil.copy2(args.input, args.out)
+            if not(args.input == args.out): shutil.copy2(args.input, args.out)
     print("[main] <local> starting setTag...")
     setTag(args)
+    if args.extra:
+        print('[main] <local> starting timecode split...')
+        timecodes(args)
 
 if args.mode == 'y':
     print("[main] xcvrt mode: youtube")
+    args.input = args.out
+    if args.extra: print('[main] <youtube> enabled extra option')
     print("[main] <youtube> try to download...")
     download(args)
     print("[main] try to set tags")
     setTag(args)
+    if args.extra:
+        print('[main] <local> starting timecode split...')
+        timecodes(args)
 
 if args.mode == 't':
-    print('[main] try to split a file by timecodes...\n[main] <timecode> try to open timecodes file...')
-    try:
-        with open(args.time, 'r') as f:
-            t = timecode.parse_tracks(f.read(), round(librosa.get_duration(path=args.input)))
-    except Exception as e:
-        print(f'[main] <timecode> failed to read file, error: {e}')
-    print("[main] <timecode> try to split file...")
-    for s in t:
-        a = " ".join(['ffmpeg', '-i', f'"{args.input}"', '-ss', s["start"], '-to', s["end"], '-c', 'copy', f'"{s["title"]}.{args.format}"'])
-        #print(a)
-        result = sb.run(a)
-        #result = sb.run(['ffmpeg', '-i', f'"{args.input}"', '-ss', s["start"], '-to', s["end"], '-c', 'copy', f'"{s["title"]}.{args.format}"'], capture_output=True, text=True)
-        if result.returncode == 0: print("[main] <timecode> success")
-        else: print(f"[main] <timecode> failed to split, error: {result.stderr}")
+    print("[main] try to split a file by timecodes...")
+    timecodes(args)
